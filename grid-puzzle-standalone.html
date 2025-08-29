@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Grid Path Puzzle</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.5/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lucide-react/0.263.1/umd/lucide-react.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #111827;
+            overflow: hidden;
+            position: fixed;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+        #root {
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .game-area {
+            touch-action: none;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            -khtml-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useRef, useCallback, useEffect } = React;
+        const { RotateCcw, Play, Trophy, Camera, Lightbulb, Undo } = lucideReact;
+
+        const GridPathGame = () => {
+            const [difficulty, setDifficulty] = useState('easy');
+            const [gameState, setGameState] = useState('menu');
+            const [grid, setGrid] = useState([]);
+            const [path, setPath] = useState([]);
+            const [currentNumber, setCurrentNumber] = useState(1);
+            const [score, setScore] = useState(0);
+            const [timeElapsed, setTimeElapsed] = useState(0);
+            const [gameStartTime, setGameStartTime] = useState(null);
+            const [maxNumber, setMaxNumber] = useState(9);
+            const [showHint, setShowHint] = useState(false);
+            const [backtracks, setBacktracks] = useState(0);
+            const [isDragging, setIsDragging] = useState(false);
+            const [dragPath, setDragPath] = useState([]);
+            const gameRef = useRef(null);
+            const canvasRef = useRef(null);
+            const gridRef = useRef(null);
+            const intervalRef = useRef(null);
+
+            const difficulties = {
+                easy: { size: 4, maxNumber: 16 },
+                medium: { size: 5, maxNumber: 25 },
+                hard: { size: 6, maxNumber: 36 },
+                expert: { size: 7, maxNumber: 49 }
+            };
+
+            // Prevent scrolling on the document
+            useEffect(() => {
+                const preventDefault = (e) => {
+                    e.preventDefault();
+                };
+                
+                document.addEventListener('touchmove', preventDefault, { passive: false });
+                document.addEventListener('touchstart', preventDefault, { passive: false });
+                
+                return () => {
+                    document.removeEventListener('touchmove', preventDefault);
+                    document.removeEventListener('touchstart', preventDefault);
+                };
+            }, []);
+
+            // Generate a valid solvable grid using random walk
+            const generateGrid = useCallback((size, maxNumber) => {
+                const totalCells = size * size;
+                
+                // Create empty grid
+                const newGrid = [];
+                for (let i = 0; i < size; i++) {
+                    const row = [];
+                    for (let j = 0; j < size; j++) {
+                        row.push({
+                            value: 0,
+                            row: i,
+                            col: j,
+                            visited: false,
+                            x: j,
+                            y: i
+                        });
+                    }
+                    newGrid.push(row);
+                }
+                
+                // Generate a valid path using random walk
+                const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+                const usedCells = new Set();
+                
+                // Start from random position
+                let currentRow = Math.floor(Math.random() * size);
+                let currentCol = Math.floor(Math.random() * size);
+                
+                // Place number 1
+                usedCells.add(`${currentRow},${currentCol}`);
+                newGrid[currentRow][currentCol].value = 1;
+                
+                // Generate path for numbers 2 through totalCells
+                for (let num = 2; num <= totalCells; num++) {
+                    // Find valid adjacent cells
+                    const validMoves = [];
+                    
+                    for (const [dr, dc] of directions) {
+                        const newRow = currentRow + dr;
+                        const newCol = currentCol + dc;
+                        
+                        if (newRow >= 0 && newRow < size && 
+                            newCol >= 0 && newCol < size && 
+                            !usedCells.has(`${newRow},${newCol}`)) {
+                            validMoves.push([newRow, newCol]);
+                        }
+                    }
+                    
+                    // If no valid moves, restart
+                    if (validMoves.length === 0) {
+                        return generateGrid(size, maxNumber);
+                    }
+                    
+                    // Choose random valid move
+                    const [nextRow, nextCol] = validMoves[Math.floor(Math.random() * validMoves.length)];
+                    
+                    usedCells.add(`${nextRow},${nextCol}`);
+                    newGrid[nextRow][nextCol].value = num;
+                    
+                    currentRow = nextRow;
+                    currentCol = nextCol;
+                }
+                
+                return newGrid;
+            }, []);
+
+            // Get cell from coordinates
+            const getCellFromCoords = useCallback((clientX, clientY) => {
+                if (!gridRef.current || !grid.length) return null;
+                
+                const gridRect = gridRef.current.getBoundingClientRect();
+                const config = difficulties[difficulty];
+                const cellSize = Math.floor(280 / config.size);
+                
+                const x = clientX - gridRect.left - 8;
+                const y = clientY - gridRect.top - 8;
+                
+                if (x < 0 || y < 0) return null;
+                
+                const col = Math.floor(x / (cellSize + 2));
+                const row = Math.floor(y / (cellSize + 2));
+                
+                if (row >= 0 && row < config.size && col >= 0 && col < config.size) {
+                    return { row, col };
+                }
+                
+                return null;
+            }, [grid, difficulty]);
+
+            // Start new game
+            const startGame = useCallback(() => {
+                const config = difficulties[difficulty];
+                const newGrid = generateGrid(config.size, config.maxNumber);
+                setGrid(newGrid);
+                setPath([]);
+                setCurrentNumber(1);
+                setGameState('playing');
+                setScore(0);
+                setTimeElapsed(0);
+                setGameStartTime(Date.now());
+                setMaxNumber(config.maxNumber);
+                setShowHint(false);
+                setBacktracks(0);
+                setIsDragging(false);
+                setDragPath([]);
+            }, [difficulty, generateGrid]);
+
+            // Timer effect
+            useEffect(() => {
+                if (gameState === 'playing' && gameStartTime) {
+                    intervalRef.current = setInterval(() => {
+                        setTimeElapsed(Date.now() - gameStartTime);
+                    }, 100);
+                } else {
+                    if (intervalRef.current) {
+                        clearInterval(intervalRef.current);
+                    }
+                }
+                
+                return () => {
+                    if (intervalRef.current) {
+                        clearInterval(intervalRef.current);
+                    }
+                };
+            }, [gameState, gameStartTime]);
+
+            // Draw path on canvas
+            const drawPath = useCallback(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                
+                const ctx = canvas.getContext('2d');
+                const config = difficulties[difficulty];
+                const cellSize = Math.floor(280 / config.size);
+                
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                const currentPath = isDragging ? dragPath : path;
+                
+                if (currentPath.length < 2) return;
+                
+                // Draw smooth flowing path
+                ctx.strokeStyle = '#ff6b35';
+                ctx.lineWidth = 6;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.shadowColor = '#ff6b35';
+                ctx.shadowBlur = 8;
+                
+                if (currentPath.length >= 2) {
+                    ctx.beginPath();
+                    
+                    // Start point
+                    const start = currentPath[0];
+                    const startX = (start.col + 0.5) * (cellSize + 2);
+                    const startY = (start.row + 0.5) * (cellSize + 2);
+                    ctx.moveTo(startX, startY);
+                    
+                    // Draw smooth curves between points
+                    for (let i = 1; i < currentPath.length; i++) {
+                        const current = currentPath[i];
+                        const x = (current.col + 0.5) * (cellSize + 2);
+                        const y = (current.row + 0.5) * (cellSize + 2);
+                        
+                        if (i === 1) {
+                            ctx.lineTo(x, y);
+                        } else {
+                            const prev = currentPath[i - 1];
+                            const prevX = (prev.col + 0.5) * (cellSize + 2);
+                            const prevY = (prev.row + 0.5) * (cellSize + 2);
+                            
+                            // Create smooth curve
+                            const cpX = (prevX + x) / 2;
+                            const cpY = (prevY + y) / 2;
+                            ctx.quadraticCurveTo(prevX, prevY, cpX, cpY);
+                            ctx.lineTo(x, y);
+                        }
+                    }
+                    ctx.stroke();
+                }
+                
+                // Draw glowing path points
+                ctx.shadowBlur = 0;
+                for (let i = 0; i < currentPath.length; i++) {
+                    const cell = currentPath[i];
+                    const x = (cell.col + 0.5) * (cellSize + 2);
+                    const y = (cell.row + 0.5) * (cellSize + 2);
+                    
+                    // Outer glow
+                    ctx.fillStyle = 'rgba(255, 107, 53, 0.3)';
+                    ctx.beginPath();
+                    ctx.arc(x, y, 6, 0, 2 * Math.PI);
+                    ctx.fill();
+                    
+                    // Inner point
+                    ctx.fillStyle = '#ff6b35';
+                    ctx.beginPath();
+                    ctx.arc(x, y, 4, 0, 2 * Math.PI);
+                    ctx.fill();
+                }
+            }, [path, dragPath, isDragging, difficulty]);
+
+            useEffect(() => {
+                drawPath();
+            }, [drawPath]);
+
+            // Handle drag start
+            const handleDragStart = useCallback((e) => {
+                if (gameState !== 'playing') return;
+                
+                e.preventDefault();
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                
+                const cellCoords = getCellFromCoords(clientX, clientY);
+                if (!cellCoords) return;
+                
+                const { row, col } = cellCoords;
+                const cell = grid[row][col];
+                
+                if (cell.value === currentNumber) {
+                    setIsDragging(true);
+                    setDragPath([{ row, col, value: cell.value }]);
+                } else {
+                    setBacktracks(prev => prev + 1);
+                }
+            }, [gameState, grid, currentNumber, getCellFromCoords]);
+
+            // Handle drag move
+            const handleDragMove = useCallback((e) => {
+                if (gameState !== 'playing') return;
+                
+                e.preventDefault();
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                
+                const cellCoords = getCellFromCoords(clientX, clientY);
+                if (!cellCoords) return;
+                
+                const { row, col } = cellCoords;
+                const cell = grid[row][col];
+                
+                // Start dragging if not already
+                if (!isDragging) {
+                    if (cell.value === currentNumber) {
+                        setIsDragging(true);
+                        setDragPath([{ row, col, value: cell.value }]);
+                    }
+                    return;
+                }
+                
+                if (dragPath.length === 0) return;
+                
+                const lastCell = dragPath[dragPath.length - 1];
+                const expectedNumber = dragPath.length + currentNumber - 1;
+                
+                // Check if this is a new cell to add to path
+                if (row === lastCell.row && col === lastCell.col) return;
+                
+                // Check if we're going backwards in the path
+                const existingIndex = dragPath.findIndex(p => p.row === row && p.col === col);
+                if (existingIndex >= 0) {
+                    setDragPath(prev => prev.slice(0, existingIndex + 1));
+                    return;
+                }
+                
+                // Check if move is valid (90-degree movement only)
+                const rowDiff = Math.abs(row - lastCell.row);
+                const colDiff = Math.abs(col - lastCell.col);
+                
+                if ((rowDiff === 1 && colDiff === 0) || (rowDiff === 0 && colDiff === 1)) {
+                    if (cell.value === expectedNumber + 1 && !cell.visited) {
+                        setDragPath(prev => [...prev, { row, col, value: cell.value }]);
+                    }
+                }
+            }, [isDragging, gameState, grid, dragPath, currentNumber, getCellFromCoords]);
+
+            // Handle drag end - only when user stops touching/clicking
+            const handleDragEnd = useCallback((e) => {
+                if (!isDragging) return;
+                
+                e.preventDefault();
+                
+                // Small delay to allow for smooth continuation
+                setTimeout(() => {
+                    if (dragPath.length > 0) {
+                        // Apply the drag path to the actual path
+                        let newGrid = [...grid];
+                        let newPath = [...path];
+                        let newCurrentNumber = currentNumber;
+                        
+                        for (const dragCell of dragPath) {
+                            if (dragCell.value === newCurrentNumber) {
+                                newGrid[dragCell.row][dragCell.col] = { ...newGrid[dragCell.row][dragCell.col], visited: true };
+                                newPath.push(dragCell);
+                                newCurrentNumber++;
+                            }
+                        }
+                        
+                        setGrid(newGrid);
+                        setPath(newPath);
+                        setCurrentNumber(newCurrentNumber);
+                        
+                        // Calculate score
+                        const newScore = newPath.length * difficulties[difficulty].size * 10 - backtracks * 5;
+                        setScore(Math.max(0, newScore));
+                        
+                        // Check if game is completed
+                        const config = difficulties[difficulty];
+                        const totalCells = config.size * config.size;
+                        
+                        if (newCurrentNumber - 1 === totalCells) {
+                            setGameState('completed');
+                            if (intervalRef.current) {
+                                clearInterval(intervalRef.current);
+                            }
+                        }
+                    }
+                    
+                    setIsDragging(false);
+                    setDragPath([]);
+                }, 100);
+            }, [isDragging, dragPath, grid, path, currentNumber, backtracks, difficulty]);
+
+            // Undo last move
+            const undoMove = () => {
+                if (path.length === 0 || gameState !== 'playing') return;
+                
+                const lastMove = path[path.length - 1];
+                const newGrid = [...grid];
+                newGrid[lastMove.row][lastMove.col] = { 
+                    ...newGrid[lastMove.row][lastMove.col], 
+                    visited: false 
+                };
+                
+                setGrid(newGrid);
+                setPath(path.slice(0, -1));
+                setCurrentNumber(currentNumber - 1);
+                setBacktracks(prev => prev + 1);
+                
+                const newScore = Math.max(0, (path.length - 1) * difficulties[difficulty].size * 10 - backtracks * 5);
+                setScore(newScore);
+            };
+
+            // Reset game
+            const resetGame = () => {
+                setGameState('menu');
+                setGrid([]);
+                setPath([]);
+                setCurrentNumber(1);
+                setScore(0);
+                setTimeElapsed(0);
+                setGameStartTime(null);
+                setBacktracks(0);
+                setIsDragging(false);
+                setDragPath([]);
+            };
+
+            // Screenshot function
+            const takeScreenshot = async () => {
+                if (!gameRef.current) return;
+                
+                try {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    
+                    canvas.width = 400;
+                    canvas.height = 600;
+                    
+                    // Background
+                    ctx.fillStyle = '#1f2937';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    
+                    // Title and stats
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = 'bold 24px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Grid Path Puzzle', canvas.width/2, 40);
+                    
+                    ctx.font = '18px Arial';
+                    ctx.fillText(`Score: ${score}`, canvas.width/2, 80);
+                    ctx.fillText(`Time: ${(timeElapsed/1000).toFixed(1)}s`, canvas.width/2, 110);
+                    ctx.fillText(`Difficulty: ${difficulty.toUpperCase()}`, canvas.width/2, 140);
+                    ctx.fillText(`Path: ${path.length} | Backtracks: ${backtracks}`, canvas.width/2, 170);
+                    
+                    // Convert to blob and download
+                    canvas.toBlob((blob) => {
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `grid-puzzle-score-${score}-backtracks-${backtracks}.png`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                    });
+                } catch (error) {
+                    console.error('Screenshot failed:', error);
+                }
+            };
+
+            const formatTime = (ms) => {
+                return (ms / 1000).toFixed(1) + 's';
+            };
+
+            if (gameState === 'menu') {
+                return React.createElement('div', {
+                    ref: gameRef,
+                    className: "max-w-md mx-auto p-6 bg-gray-900 text-white rounded-xl shadow-2xl"
+                }, 
+                    React.createElement('div', { className: "text-center mb-8" },
+                        React.createElement('h1', { className: "text-3xl font-bold mb-2 text-orange-400" }, "Grid Path Puzzle"),
+                        React.createElement('p', { className: "text-gray-300" }, "Connect numbers 1→2→3... in sequence"),
+                        React.createElement('p', { className: "text-gray-400 text-sm mt-2" }, "Drag/swipe through numbers - only 90° moves"),
+                        React.createElement('div', { className: "flex items-center justify-center gap-2 mt-3 text-orange-300" },
+                            React.createElement('div', { className: "w-4 h-4 bg-orange-500 rounded-full" }),
+                            React.createElement('div', { className: "text-sm" }, "Path shows your route")
+                        )
+                    ),
+                    React.createElement('div', { className: "mb-6" },
+                        React.createElement('label', { className: "block text-sm font-medium mb-3 text-gray-300" }, "Choose Difficulty:"),
+                        React.createElement('div', { className: "grid grid-cols-2 gap-2" },
+                            Object.entries(difficulties).map(([level, config]) => 
+                                React.createElement('button', {
+                                    key: level,
+                                    onClick: () => setDifficulty(level),
+                                    className: `p-3 rounded-lg text-center transition-colors ${
+                                        difficulty === level 
+                                            ? 'bg-orange-600 text-white' 
+                                            : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                                    }`
+                                },
+                                    React.createElement('div', { className: "font-medium capitalize" }, level),
+                                    React.createElement('div', { className: "text-xs" }, `${config.size}×${config.size} grid`),
+                                    React.createElement('div', { className: "text-xs" }, `${config.size * config.size} numbers`)
+                                )
+                            )
+                        )
+                    ),
+                    React.createElement('button', {
+                        onClick: startGame,
+                        className: "w-full bg-green-600 hover:bg-green-700 text-white font-medium py-4 px-6 rounded-lg transition-colors flex items-center justify-center gap-2"
+                    },
+                        React.createElement(Play, { size: 20 }),
+                        "Start Game"
+                    )
+                );
+            }
+
+            const config = difficulties[difficulty];
+            const gridSize = config.size;
+            const cellSize = Math.floor(280 / gridSize);
+
+            return React.createElement('div', {
+                ref: gameRef,
+                className: "max-w-md mx-auto p-4 bg-gray-900 text-white rounded-xl shadow-2xl game-area"
+            },
+                // Header
+                React.createElement('div', { className: "text-center mb-4" },
+                    React.createElement('div', { className: "flex justify-between items-center mb-2" },
+                        React.createElement('div', { className: "flex gap-2" },
+                            React.createElement('button', {
+                                onClick: undoMove,
+                                disabled: path.length === 0,
+                                className: "bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-700 disabled:text-gray-500 p-2 rounded-lg transition-colors"
+                            }, React.createElement(Undo, { size: 16 })),
+                            React.createElement('button', {
+                                onClick: () => setShowHint(!showHint),
+                                className: `p-2 rounded-lg transition-colors ${showHint ? 'bg-blue-500' : 'bg-blue-600 hover:bg-blue-700'}`
+                            }, React.createElement(Lightbulb, { size: 16 }))
+                        ),
+                        React.createElement('div', { className: "text-center" },
+                            React.createElement('div', { className: "text-lg font-bold text-orange-400" }, `Next: ${currentNumber}`),
+                            React.createElement('div', { className: "text-xs text-gray-400" }, difficulty.toUpperCase())
+                        ),
+                        React.createElement('div', { className: "flex gap-2" },
+                            React.createElement('button', {
+                                onClick: takeScreenshot,
+                                className: "bg-purple-600 hover:bg-purple-700 p-2 rounded-lg transition-colors"
+                            }, React.createElement(Camera, { size: 16 })),
+                            React.createElement('button', {
+                                onClick: resetGame,
+                                className: "bg-gray-700 hover:bg-gray-600 p-2 rounded-lg transition-colors"
+                            }, React.createElement(RotateCcw, { size: 16 }))
+                        )
+                    ),
+                    React.createElement('div', { className: "flex justify-between text-sm text-gray-300" },
+                        React.createElement('span', {}, `Score: ${score}`),
+                        React.createElement('span', {}, `Backtracks: ${backtracks}`),
+                        React.createElement('span', {}, `Time: ${formatTime(timeElapsed)}`)
+                    )
+                ),
+                // Game Grid with Canvas Overlay
+                React.createElement('div', { className: "flex justify-center mb-4" },
+                    React.createElement('div', {
+                        ref: gridRef,
+                        className: "relative bg-gray-100 rounded-lg p-2 select-none game-area",
+                        style: { width: '300px', height: '300px' },
+                        onMouseDown: handleDragStart,
+                        onMouseMove: handleDragMove,
+                        onMouseUp: handleDragEnd,
+                        onTouchStart: handleDragStart,
+                        onTouchMove: handleDragMove,
+                        onTouchEnd: handleDragEnd
+                    },
+                        React.createElement('div', {
+                            className: "absolute inset-2 grid gap-0.5",
+                            style: {
+                                gridTemplateColumns: `repeat(${gridSize}, ${cellSize}px)`,
+                                gridTemplateRows: `repeat(${gridSize}, ${cellSize}px)`
+                            }
+                        },
+                            grid.map((row, rowIndex) =>
+                                row.map((cell, colIndex) =>
+                                    React.createElement('div', {
+                                        key: `${rowIndex}-${colIndex}`,
+                                        className: `flex items-center justify-center rounded transition-all ${
+                                            cell.visited 
+                                                ? 'bg-orange-200' 
+                                                : cell.value === currentNumber && showHint
+                                                ? 'bg-yellow-300 animate-pulse'
+                                                : 'bg-white hover:bg-gray-100'
+                                        }`,
+                                        style: {
+                                            width: `${cellSize}px`,
+                                            height: `${cellSize}px`
+                                        }
+                                    },
+                                        React.createElement('div', {
+                                            className: `w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold ${
+                                                cell.visited ? 'bg-orange-500 text-white' : 'bg-gray-700 text-white'
+                                            }`,
+                                            style: { fontSize: '11px' }
+                                        }, cell.value)
+                                    )
+                                )
+                            )
+                        ),
+                        React.createElement('canvas', {
+                            ref: canvasRef,
+                            width: 280,
+                            height: 280,
+                            className: "absolute top-2 left-2 pointer-events-none",
+                            style: { width: '280px', height: '280px' }
+                        })
+                    )
+                ),
+                gameState === 'completed' && React.createElement('div', {
+                    className: "bg-green-800 border border-green-600 p-4 rounded-lg text-center mb-4"
+                },
+                    React.createElement(Trophy, { className: "mx-auto mb-2 text-yellow-400", size: 32 }),
+                    React.createElement('div', { className: "text-lg font-bold text-green-300 mb-1" }, "Puzzle Completed!"),
+                    React.createElement('div', { className: "text-sm text-green-400" }, `Final Score: ${score}`),
+                    React.createElement('div', { className: "text-sm text-green-400" }, `Time: ${formatTime(timeElapsed)}`),
+                    React.createElement('div', { className: "text-sm text-green-400" }, `Backtracks: ${backtracks}`),
+                    React.createElement('div', { className: "mt-3 space-x-2" },
+                        React.createElement('button', {
+                            onClick: takeScreenshot,
+                            className: "bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded text-sm transition-colors"
+                        }, "📸 Save Score"),
+                        React.createElement('button', {
+                            onClick: startGame,
+                            className: "bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded text-sm transition-colors"
+                        }, "Play Again")
+                    )
+                ),
+                React.createElement('div', { className: "text-center mt-4" },
+                    React.createElement('div', { className: "text-xs text-gray-500" },
+                        "Drag/swipe 1→2→3... • Only 90° moves • Avoid backtracks for high score"
+                    )
+                )
+            );
+        };
+
+        ReactDOM.render(React.createElement(GridPathGame), document.getElementById('root'));
+    </script>
+</body>
+</html>
